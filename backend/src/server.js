@@ -1,17 +1,15 @@
+require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-require('dotenv').config();
+const jwt = require('jsonwebtoken');
 
 const User = require('./models/User');
 const Task = require('./models/Task');
 const Workspace = require('./models/Workspace');
-const auth = require('./middleware/auth');
 
 const app = express();
-
 app.use(cors());
 app.use(express.json());
 
@@ -19,37 +17,44 @@ mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('MongoDB Connected'))
   .catch(err => console.log('MongoDB Connection Error:', err));
 
-app.post('/api/register', async (req, res) => {
-  console.log("Register route hit with email:", req.body.email);
+const auth = (req, res, next) => {
+  const token = req.header('Authorization')?.replace('Bearer ', '');
+  if (!token) return res.status(401).json({ error: 'Access denied' });
   try {
-    const { email, password } = req.body;
-    let user = await User.findOne({ email });
-    if (user) return res.status(400).json({ message: 'User already exists' });
+    const verified = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = verified.id;
+    next();
+  } catch (err) {
+    res.status(400).json({ error: 'Invalid token' });
+  }
+};
 
-    user = new User({ email, password });
+app.post('/api/register', async (req, res) => {
+  try {
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(req.body.password, salt);
+    const user = new User({ email: req.body.email, password: hashedPassword });
     await user.save();
 
-    const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: '1d' });
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET);
     res.json({ token });
-  } catch (error) {
-    console.error("Registration error:", error);
-    res.status(500).json({ message: 'Server error during registration' });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 
 app.post('/api/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
-    const user = await User.findOne({ email });
-    if (!user) return res.status(400).json({ message: 'Invalid credentials' });
+    const user = await User.findOne({ email: req.body.email });
+    if (!user) return res.status(400).json({ error: 'User not found' });
 
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(400).json({ message: 'Invalid credentials' });
+    const validPassword = await bcrypt.compare(req.body.password, user.password);
+    if (!validPassword) return res.status(400).json({ error: 'Invalid password' });
 
-    const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: '1d' });
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET);
     res.json({ token });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error' });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 
@@ -102,4 +107,6 @@ app.delete('/api/tasks/:id', auth, async (req, res) => {
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, '127.0.0.1', () => console.log(`Server running on http://127.0.0.1:${PORT}`));
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on port ${PORT}`);
+});
